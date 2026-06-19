@@ -96,8 +96,7 @@ def synchronise_tracking_and_event_data(
             leave=False,
         )
 
-    cost_cols = ["time_cost", "ball_event_dist_cost", "ball_player_dist_cost", "ball_acc_cost", "player_ball_dist_inc_cost", "goal_angle_cost"]
-    
+    # loop over batches
     extra_tracking_info = pd.DataFrame(
         index=tracking_data.index,
         columns=["databallpy_event", "event_id", "sync_certainty"] + cost_cols,
@@ -176,16 +175,13 @@ def _create_sim_mat(
         cost_functions (dict, optional): dictionary containing the cost functions that
 
     Returns:
-        tuple[np.ndarray, dict]: array containing similarity scores between every frame and events,
-            size is #frames, #events, and a dictionary containing the individual cost components
+        np.ndarray: array containing similarity scores between every frame and events,
+            size is #frames, #events
     """
     sim_mat = np.zeros((len(tracking_batch), len(event_batch)))
     time_diff, ball_event_diff = pre_compute_cost_function_variables(
         tracking_batch, event_batch
     )
-
-    # Dictionary to store the individual cost components for every frame-event pair
-    matrix_components = {}
 
     for row in event_batch.itertuples():
         i = row.Index
@@ -888,9 +884,7 @@ def combine_cost_functions(costs: list) -> np.ndarray[float]:
     """
     total_array = np.array(costs)
     total_array[:, np.isnan(total_array).all(axis=0)] = 1
-    mean_cost = np.nanmean(total_array, axis=0)
-    components = {keys[i]: costs[i] for i in range(len(costs))}
-    return mean_cost, components
+    return np.nanmean(total_array, axis=0)
 
 
 def base_pass_cost_function(
