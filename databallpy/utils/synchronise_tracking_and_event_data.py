@@ -254,7 +254,7 @@ def _needleman_wunsch(
     pointer_matrix[:, 0] = 3
     pointer_matrix[0, :] = 4
 
-    frames_high_sim_mat = np.where(sim_mat[:, 0] > 0.5)[0]
+    frames_high_sim_mat = np.where(sim_mat[:, 0] > 0.3)[0]
     for event_index in range(n_events):
         start_frame = (
             0
