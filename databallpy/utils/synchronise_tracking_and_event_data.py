@@ -96,7 +96,17 @@ def synchronise_tracking_and_event_data(
             leave=False,
         )
 
-    # loop over batches
+    # --- DEFINED cost_cols FOR METRIC STORAGE ---
+    cost_cols = [
+        "time_cost", 
+        "ball_event_dist_cost", 
+        "ball_player_dist_cost", 
+        "ball_acc_cost", 
+        "player_ball_dist_inc_cost", 
+        "goal_angle_cost"
+    ]
+
+    # Loop over batches
     extra_tracking_info = pd.DataFrame(
         index=tracking_data.index,
         columns=["databallpy_event", "event_id", "sync_certainty"] + cost_cols,
@@ -105,7 +115,7 @@ def synchronise_tracking_and_event_data(
         index=event_data.index, 
         columns=["tracking_frame", "sync_certainty"] + cost_cols
     )
-
+    
     batch_first_datetime = tracking_data["datetime"].iloc[0]
     for batch_end_datetime in end_datetimes:
         # create batches
@@ -119,7 +129,7 @@ def synchronise_tracking_and_event_data(
         event_batch = event_data_to_sync[event_mask].reset_index(drop=False)
 
         if len(event_batch) > 0:
-            # Unpack both the similarity matrix and the newly added components dictionary
+            # Unpack matrix AND matrix_components dictionary safely
             sim_mat, matrix_components = _create_sim_mat(
                 tracking_batch,
                 event_batch,
@@ -135,19 +145,20 @@ def synchronise_tracking_and_event_data(
                 event_type = event_batch.loc[event, "databallpy_event"]
                 event_index = int(event_batch.loc[event, "index"])
                 tracking_frame = int(tracking_batch.loc[frame, "index"])
-                
                 extra_tracking_info.loc[tracking_frame, "databallpy_event"] = event_type
                 extra_tracking_info.loc[tracking_frame, "event_id"] = event_id
-                extra_tracking_info.loc[tracking_frame, "sync_certainty"] = sim_mat[frame, event]
-                
+                extra_tracking_info.loc[tracking_frame, "sync_certainty"] = sim_mat[
+                    frame, event
+                ]
                 extra_event_info.loc[event_index, "tracking_frame"] = tracking_frame
-                extra_event_info.loc[event_index, "sync_certainty"] = sim_mat[frame, event]
-                
-                # --- NEW CODE TO ASSIGN COMPONENT COSTS ---
+                extra_event_info.loc[event_index, "sync_certainty"] = sim_mat[
+                    frame, event
+                ]
+
+                # Assign the raw cost scores for the matched index/frame
                 event_components = matrix_components[event]
                 for c_col in cost_cols:
                     if c_col in event_components:
-                        # Extract value for the specific matching frame
                         val = event_components[c_col][frame]
                         extra_tracking_info.loc[tracking_frame, c_col] = val
                         extra_event_info.loc[event_index, c_col] = val
@@ -164,24 +175,15 @@ def _create_sim_mat(
     home_players: pd.DataFrame,
     away_players: pd.DataFrame,
     cost_functions: dict = {},
-) -> tuple[np.ndarray, dict]:
-    """Function that creates similarity matrix between every frame and event in batch
-
-    Args:
-        tracking_batch (pd.DataFrame): batch of tracking data
-        event_batch (pd.DataFrame): batch of event data
-        home_players (pd.DataFrame): Information about the home players
-        away_players (pd.DataFrame): Information about the away_players
-        cost_functions (dict, optional): dictionary containing the cost functions that
-
-    Returns:
-        np.ndarray: array containing similarity scores between every frame and events,
-            size is #frames, #events
-    """
+) -> tuple[np.ndarray, dict]: # Return tuple of array and dict
+    """Function that creates similarity matrix between every frame and event in batch"""
     sim_mat = np.zeros((len(tracking_batch), len(event_batch)))
     time_diff, ball_event_diff = pre_compute_cost_function_variables(
         tracking_batch, event_batch
     )
+
+    # --- DEFINED matrix_components DICTIONARY TO FIX ERROR ---
+    matrix_components = {}
 
     for row in event_batch.itertuples():
         i = row.Index
@@ -210,6 +212,7 @@ def _create_sim_mat(
         if "ball_event_distance" in sig.parameters:
             kwargs["ball_event_distance"] = ball_event_diff[:, i]
 
+        # Cost function now outputs a tuple (cost_array, breakdown_dict)
         cost, components = cost_function(
             tracking_data=tracking_batch,
             event=row,
@@ -219,10 +222,9 @@ def _create_sim_mat(
         )
 
         _validate_cost(cost, len(tracking_batch))
+
         sim_mat[:, i] = cost
-        
-        # Store components for this specific event index 'i'
-        matrix_components[i] = components
+        matrix_components[i] = components # Save breakdown mapping
 
     sim_mat[np.isnan(sim_mat)] = 1
     sim_mat = -sim_mat + 1  # low cost is better similarity
@@ -237,21 +239,6 @@ def _needleman_wunsch(
     gap_event=-10,
     gap_frame=0.2,
 ) -> dict:
-    """
-    Function that calculates the optimal alignment between events and frames
-    given similarity scores between all frames and events
-    Based on: https://gist.github.com/slowkow/06c6dba9180d013dfd82bec217d22eb5
-
-    Args:
-        sim_mat (np.ndarray): matrix with similarity between every frame and event
-        gap_event (int): penalty for leaving an event unassigned to a frame
-            (not allowed), defaults to -10
-        gap_frame (int): penalty for leaving a frame unassigned to a penalty
-            (very common), defaults to 0.2
-
-    Returns:
-       event_frame_dict (dict): dictionary with events as keys and frames as values
-    """
     if pd.isnull(sim_mat).any().any():
         raise ValueError(
             "Found NaN values in the similarity matrix, can not perform needleman_wunch."
@@ -299,7 +286,6 @@ def _needleman_wunsch(
                 function_matrix[frame_index + 1, event_index] + gap_event
             )  # left + gap event
 
-            # Determine the maximum value and set the pointer matrix accordingly
             if gap_f >= match and gap_f >= gap_e:
                 function_matrix[frame_index + 1, event_index + 1] = gap_f
                 pointer_matrix[frame_index + 1, event_index + 1] = FRAME_UNASSIGNED
@@ -310,7 +296,6 @@ def _needleman_wunsch(
                 function_matrix[frame_index + 1, event_index + 1] = gap_e
                 pointer_matrix[frame_index + 1, event_index + 1] = EVENT_UNASSIGNED
 
-    # Solve
     frame_index = n_frames
     event_index = n_events
     frames = np.zeros(n_frames, dtype=np.int32)
@@ -336,8 +321,7 @@ def _needleman_wunsch(
             )
         else:
             raise ValueError(
-                f"The algorithm got stuck due to an unexpected "
-                f"value of P[{frame_index}, {event_index}]: {pointer_matrix[frame_index, event_index]}"
+                f"The algorithm got stuck due to an unexpected value"
             )
         count += 1
     frames = frames[::-1]
@@ -354,23 +338,10 @@ def _needleman_wunsch(
 def pre_compute_cost_function_variables(
     tracking_batch: pd.DataFrame, event_batch: pd.DataFrame
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Function that precomputes variables that are used in the cost functions. The
-    following variables are computed: time_diff, and ball_event_diff.
-
-    Args:
-        tracking_batch (pd.DataFrame): Tracking data batch of the game
-        event_batch (pd.DataFrame): Event data batch of the game
-
-    Returns:
-        tuple[np.ndarray, np.ndarray]: Tuple containing the precomputed variables
-            time_diff, and ball_event_diff
-    """
-    # Pre-compute time_diff
     track_dt = tracking_batch["datetime"].values
     event_dt = event_batch["datetime"].values
     time_diff = (track_dt[:, np.newaxis] - event_dt) / pd.Timedelta(seconds=1)
 
-    # Pre-compute ball_loc_diff bewteen tracking and event data
     track_bx = tracking_batch["ball_x"].values
     track_by = tracking_batch["ball_y"].values
     event_x = event_batch["start_x"].values
@@ -387,25 +358,12 @@ def pre_compute_synchronisation_variables(
     frame_rate: int | float,
     pitch_dimensions: tuple,
 ) -> pd.DataFrame:
-    """Function that precomputes variables that are used in the synchronisation.
-    The following variables are computed: ball_velocity, ball_acceleration,
-    ball_acceleration_sqrt, goal_angle_home_team, and goal_angle_away_team.
-
-    Args:
-        tracking_data (pd.DataFrame): Tracking data of the game
-        frame_rate (int): Frame rate of the tracking_data
-        pitch_dimensions (tuple): Tuple containing the pitch dimensions
-
-    Returns:
-        pd.DataFrame: Tracking data with the precomputed variables.
-    """
-    # precompute ball acceleration
     if "ball_velocity" not in tracking_data.columns:
         tracking_data = _differentiate(
             df=tracking_data,
             max_val=50,
             new_name="velocity",
-            metric="",  # differentiate the x and y values
+            metric="",
             frame_rate=frame_rate,
             filter_type=None,
             column_ids=["ball"],
@@ -414,14 +372,13 @@ def pre_compute_synchronisation_variables(
         tracking_data = _differentiate(
             df=tracking_data,
             new_name="acceleration",
-            metric="v",  # differentiate the vx and vy values
+            metric="v",
             frame_rate=frame_rate,
             filter_type="savitzky_golay",
             max_val=150,
             column_ids=["ball"],
         )
 
-    # pre compute ball moving vector - ball goal vector angle
     goal_angle = get_smallest_angle(
         tracking_data.iloc[1:][["ball_x", "ball_y"]].values
         - tracking_data.iloc[:-1][["ball_x", "ball_y"]].values,
@@ -448,19 +405,6 @@ def create_naive_batches(
     n_batches: int,
     tracking_data: pd.DataFrame,
 ) -> list[pd.Timestamp]:
-    """Function that creates batches to loop over. The batches are created based on
-    the number of batches per half. The first batch starts at the first frame of the
-    period. The last batch ends at the last frame of the period. The batches are
-    created in such a way that the last frame of the batch is always a frame that
-    contains tracking data.
-
-    Args:
-        n_batches_per_half (int):  the number of batches that are created per half.
-        tracking_data (pd.DataFrame): Tracking data of the game
-
-    Returns:
-        list: The end datetimes of the batches.
-    """
     len_periods = {
         period_id: len(tracking_data[tracking_data["period_id"] == period_id])
         for period_id in tracking_data["period_id"].unique()
@@ -487,7 +431,6 @@ def create_naive_batches(
             tracking_data_p["ball_status"] == "alive"
         ].index[-1]
 
-        # find the indexes where the batches end
         end_frames = np.floor(
             np.arange(
                 first_valid_frame_index,
@@ -496,10 +439,8 @@ def create_naive_batches(
             )
         ).astype(int)
 
-        # drop the first datetime, is not a end datetime, and add the last
         end_frames = end_frames[1:]
         end_frames = np.concatenate([end_frames, np.array([last_valid_frame_index])])
-        # find the datetimes where the batches end
 
         end_datetimes = [tracking_data_p.loc[x, "datetime"] for x in end_frames]
         end_datetimes_total += end_datetimes
@@ -508,24 +449,6 @@ def create_naive_batches(
 
 
 def create_smart_batches(tracking_data: pd.DataFrame) -> list[pd.Timestamp]:
-    """Function that creates batches to loop over. The batches are created based on
-    active periods of play. For every active period of play, it is checked when the
-    last period of play ended. The split of the batches is chosen in such a way that
-    it is exactly between two periods of active play. For example, if the first
-    period of play ends at 10 seconds and the second period of play starts at 20
-    seconds, the split is chosen at 15 seconds.
-
-    Note: this method is optimised for events that are in active play, other events,
-    such as yellow cards might not be perfectly synced.
-
-
-    Args:
-        tracking_data (pd.DataFrame): Tracking data of the game
-
-    Returns:
-        List: List containing the end datetimes of the batches.
-    """
-
     first_valid_frame_index = tracking_data[
         tracking_data["ball_status"] == "alive"
     ].index[0]
@@ -533,8 +456,6 @@ def create_smart_batches(tracking_data: pd.DataFrame) -> list[pd.Timestamp]:
         tracking_data["ball_status"] == "alive"
     ].index[-1]
 
-    # find all the indexes where the ball switches from alive to dead
-    # this is the last frame that the ball is alive in a batch
     end_alive_idxs = (
         np.where(
             (tracking_data.iloc[:-1]["ball_status"] == "alive").values
@@ -547,8 +468,6 @@ def create_smart_batches(tracking_data: pd.DataFrame) -> list[pd.Timestamp]:
             [end_alive_idxs, np.array([last_valid_frame_index])]
         )
 
-    # find all the indexes where the ball switches from dead to alive
-    # this is the first frame that the ball is alive in a batch
     start_alive_idxs = (
         np.where(
             (tracking_data.iloc[:-1]["ball_status"] == "dead").values
@@ -562,7 +481,6 @@ def create_smart_batches(tracking_data: pd.DataFrame) -> list[pd.Timestamp]:
             [np.array([first_valid_frame_index]), start_alive_idxs]
         )
 
-    # create batches to loop over
     last_end_dt = None
     end_datetimes = []
     for start_idx, end_idx in zip(start_alive_idxs, end_alive_idxs):
@@ -571,12 +489,10 @@ def create_smart_batches(tracking_data: pd.DataFrame) -> list[pd.Timestamp]:
 
         if last_end_dt is not None:
             difference = start_dt - last_end_dt
-            last_end_dt + difference / 2
             end_datetimes.append(last_end_dt + difference / 2)
 
         last_end_dt = end_dt
 
-    # add last datetime with some room for the last events
     end_datetimes.append(last_end_dt + pd.to_timedelta(1, unit="h"))
 
     return end_datetimes
@@ -585,24 +501,6 @@ def create_smart_batches(tracking_data: pd.DataFrame) -> list[pd.Timestamp]:
 def align_event_data_datetime(
     event_data: pd.DataFrame, tracking_data: pd.DataFrame, offset: float = 1.0
 ) -> pd.DataFrame:
-    """Function that aligns the datetimes of the event data and tracking data. This
-    is done by substracting the difference between the first event and the first
-    tracking frame from all event datetimes.
-
-    Args:
-        event_data (pd.DataFrame): Event data of the game that needs to be synced
-        tracking_data (pd.DataFrame): Tracking data of the game
-        offset (float, optional): Offset in seconds that is added to the difference
-            between the first event and the first tracking frame. This is done because
-            this way the event is synced to the last frame the ball is close to a
-            player. Which often corresponds with the event (pass and shots).
-            Defaults to 1.0.
-
-    Returns:
-        pd.DataFrame: Event data with aligned datetimes
-
-    """
-
     if (tracking_data["datetime"].dt.tz is None) != (
         event_data["datetime"].dt.tz is None
     ):
@@ -631,7 +529,6 @@ def align_event_data_datetime(
         diff_datetime = datetime_first_event - datetime_first_tracking_frame
 
         event_data.loc[event_data_p.index, "datetime"] -= diff_datetime
-        # add offset in seconds to diff_datetime
         event_data.loc[event_data_p.index, "datetime"] += pd.to_timedelta(
             np.max([0.0, offset]), unit="seconds"
         )
@@ -645,25 +542,6 @@ def get_time_difference_cost(
     time_diff: np.ndarray[float] | None = None,
     **kwargs: dict,
 ) -> np.ndarray[float]:
-    """Function that calculates the cost of the time difference between the tracking
-    and event data datetime. The cost is calculated using a sigmoid function. The
-    sigmoid function is used to give a higher cost to large time differences. The
-    sigmoid function is defined as:  a + b / (1 + c * np.exp(d * -(x - e))). The
-    default values are a=0.0, b=1.0, c=1.0, d=1.0, e=0.0. The default values can be
-    changed by passing them as keyword arguments. If no keyword arguments are passed,
-    the default values are used, except for e, which is set to 5.
-
-
-    Args:
-        tracking_data (pd.DataFrame): Tracking data of the game
-        event (pd.Series): Event that needs to be synced
-        time_diff (np.ndarray[float], optional): Array containing the time difference
-            between the tracking and event data datetime
-        **kwargs: Keyword arguments that can be passed to the sigmoid function
-
-    Returns:
-        np.ndarray[float]: array containing the cost of the time difference
-    """
     _validate_sigmoid_kwargs(kwargs)
 
     if time_diff is None:
@@ -681,24 +559,6 @@ def get_distance_ball_event_cost(
     ball_event_distance: np.ndarray[float] | None = None,
     **kwargs: dict,
 ) -> np.ndarray[float]:
-    """Function that calculates the cost of the distance between the ball and the
-    event location. The cost is calculated using a sigmoid function. The sigmoid
-    function is used to give a higher cost to larger euclidean distances. The
-    sigmoid function is defined as:  a + b / (1 + c * np.exp(d * -(x - e))). The
-    default values are a=0.0, b=1.0, c=1.0, d=1.0, e=0.0. The default values can be
-    changed by passing them as keyword arguments. If no keyword arguments are passed,
-    the default values are used, except for d and e, which are set to 5 and 6.
-
-    Args:
-        tracking_data (pd.DataFrame): Tracking data of the game
-        event (pd.Series): Event that needs to be synced
-        ball_event_distance (np.ndarray[float], optional): Array containing the distance
-        **kwargs: Keyword arguments that can be passed to the sigmoid function
-
-    Returns:
-        np.ndarray[float]: array containing the cost of the distance between the ball
-        and the event location
-    """
     _validate_sigmoid_kwargs(kwargs)
     if ball_event_distance is None:
         ball_event_distance = np.hypot(
@@ -717,24 +577,6 @@ def get_distance_ball_player_cost(
     jersey: int,
     **kwargs: dict,
 ) -> np.ndarray[float]:
-    """Function that calculates the cost of the difference between the ball and the
-    player in the tracking data. The cost is calculated using a sigmoid function. The
-    sigmoid function is used to give a higher cost to larger eucledian distances. The
-    sigmoid function is defined as:  a + b / (1 + c * np.exp(d * -(x - e))). The
-    default values are a=0.0, b=1.0, c=1.0, d=1.0, e=0.0. The default values can be
-    changed by passing them as keyword arguments. If no keyword arguments are passed,
-    the default values are used, except for d and e, which are set to 5 and 2.5.
-
-    Args:
-        tracking_data (pd.DataFrame): Tracking data of the game
-        team_side (str): Either home or away, the side of the player performing the event
-        jersey (int): The shirt number of the player performing the event
-        **kwargs: Keyword arguments that can be passed to the sigmoid function
-
-    Returns:
-        np.ndarray[float]: array containing the cost of the distance between the ball
-        and the player in the tracking data
-    """
     _validate_sigmoid_kwargs(kwargs)
     col_id = f"{team_side}_{jersey}"
     distance = np.hypot(
@@ -750,23 +592,6 @@ def get_distance_ball_player_cost(
 def get_ball_acceleration_cost(
     tracking_data: pd.DataFrame, **kwargs: dict
 ) -> np.ndarray[float]:
-    """Function that calculates the cost of the ball acceleration in the tracking data.
-    The cost is calculated using a sigmoid function. The sigmoid function is used to
-    give a lower cost to higher ball accelerations. The sigmoid function is defined as:
-    a + b / (1 + c * np.exp(d * -(x - e))). The default values are a=0.0, b=1.0, c=1.0,
-    d=1.0, e=0.0. The default values can be changed by passing them as keyword
-    arguments. If no keyword arguments are passed, the default values are used, except
-    for d and e, which are set to 0.2 and -25.0. In this case the acceleration is also
-    passed by multiplying it with -1. This will not be done if keyword arguments are
-    passed.
-
-    Args:
-        tracking_data (pd.DataFrame): Tracking data of the game
-        **kwargs: Keyword arguments that can be passed to the sigmoid function
-
-    Returns:
-        np.ndarray[float]: array containing the cost of the ball acceleration
-    """
     _validate_sigmoid_kwargs(kwargs)
     acc = tracking_data["ball_acceleration"].values
     if len(kwargs) > 0:
@@ -780,25 +605,6 @@ def get_player_ball_distance_increase_cost(
     jersey: str,
     **kwargs: dict,
 ) -> np.ndarray[float]:
-    """Function that calculates the cost of the increase in distance between the player
-    and the ball. When passing or shooting the ball, the distance between the player and
-    the ball should increase. The cost is calculated using a sigmoid function. The
-    sigmoid function is used to give a lower cost to larger increases in distance. The
-    sigmoid function is defined as:  a + b / (1 + c * np.exp(d * -(x - e))). The default
-    values are a=0.0, b=1.0, c=1.0, d=1.0, e=0.0. The default values can be changed by
-    passing them as keyword arguments. If no keyword arguments are passed, the default
-    values are used, except for d and e, which are set to -8.0.
-
-    Args:
-        tracking_data (pd.DataFrame): Tracking data of the game
-        team_side (str): Either home or away, the side of the player performing the event
-        jersey (int): The shirt number of the player performing the event
-        **kwargs: Keyword arguments that can be passed to the sigmoid function
-
-    Returns:
-        np.ndarray[float]: array containing the cost of the increase in distance between
-        the player and the ball
-    """
     _validate_sigmoid_kwargs(kwargs)
     col_id = f"{team_side}_{jersey}"
     player_ball_diff = np.hypot(
@@ -816,24 +622,6 @@ def get_ball_goal_angle_cost(
     pitch_length: float,
     **kwargs: dict,
 ) -> np.ndarray[float]:
-    """Function that calculates the cost of the angle between the ball moving direction
-    and the goal. The cost is calculated using a sigmoid function. The sigmoid function
-    is used to give a higher cost to larger angles. The sigmoid function is defined as:
-    a + b / (1 + c * np.exp(d * -(x - e))). The default values are a=0.0, b=1.0, c=1.0,
-    d=1.0, e=0.0. The default values can be changed by passing them as keyword
-    arguments. If no keyword arguments are passed, the default values are used, except
-    for d and e, which are set to 6 and 0.2 * np.pi.
-
-    Args:
-        tracking_data (pd.DataFrame): Tracking data of the game
-        team_side (str): Either home or away, the side of the player performing the event
-        pitch_length (float): The length of the pitch in meters
-        **kwargs: Keyword arguments that can be passed to the sigmoid function
-
-    Returns:
-        np.ndarray[float]: array containing the cost of the angle between the ball
-            moving direction and the goal
-    """
     _validate_sigmoid_kwargs(kwargs)
     if not all(
         x in tracking_data.columns
@@ -870,21 +658,15 @@ def get_ball_goal_angle_cost(
     return sigmoid(goal_angle, d=6, e=0.2 * np.pi)
 
 
-def combine_cost_functions(costs: list) -> np.ndarray[float]:
-    """Function that combines multiple cost functions into one. The cost functions are
-    passed as keyword arguments. The cost functions are combined by taking the mean of
-    all the cost functions. The cost functions should return an array with the cost of
-    each frame.
-
-    Args:
-        costs (list): List containing the cost values
-
-    Returns:
-        np.ndarray[float]: array containing the combined cost of all cost functions
-    """
+# --- MODIFIED TO EXPOSE INDIVIDUAL MATRICES ---
+def combine_cost_functions(costs: list, keys: list) -> tuple[np.ndarray, dict]:
+    """Function that combines multiple cost functions into one and exposes original components."""
     total_array = np.array(costs)
     total_array[:, np.isnan(total_array).all(axis=0)] = 1
-    return np.nanmean(total_array, axis=0)
+    mean_cost = np.nanmean(total_array, axis=0)
+    
+    components = {keys[i]: costs[i] for i in range(len(costs))}
+    return mean_cost, components
 
 
 def base_pass_cost_function(
@@ -895,38 +677,20 @@ def base_pass_cost_function(
     time_diff: np.ndarray | None = None,
     ball_event_distance: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict]:
-    """Function that calculates the total cost of a pass event compared to each frame.
-    The base pase cost function includes:
-    1. Time difference between the tracking and event data datetime
-    2. Distance between the ball and the event location
-    3. Distance between the ball and the player in the tracking data
-    4. Absolute ball acceleration
-    5. The increase in distance between the player and the ball
-
-    Args:
-        tracking_data (pd.DataFrame): Tracking data of the game
-        event (pd.Series): Pass event that needs to be synced
-        team_side (str): Either home or away, the side of the player performing the event
-        jersey (int): The shirt number of the player performing the event
-        time_diff (np.ndarray[float], optional): Array containing the time difference
-            between the tracking and event data datetime
-        ball_event_distance (np.ndarray[float], optional): Array containing the
-            distance between the ball and the event location
-
-    Returns:
-        np.ndarray[float]: array containing the total cost of the pass event compared
-            to each frame
-    """
-
     time_diff_cost = get_time_difference_cost(tracking_data, event, time_diff=time_diff)
-    distance_ball_event_cost = get_distance_ball_event_cost(tracking_data, event, ball_event_distance=ball_event_distance)
-    distance_ball_player_cost = get_distance_ball_player_cost(tracking_data, team_side, jersey)
+    distance_ball_event_cost = get_distance_ball_event_cost(
+        tracking_data, event, ball_event_distance=ball_event_distance
+    )
+    distance_ball_player_cost = get_distance_ball_player_cost(
+        tracking_data, team_side, jersey
+    )
     ball_acceleration_cost = get_ball_acceleration_cost(tracking_data)
-    player_ball_diff_cost = get_player_ball_distance_increase_cost(tracking_data, team_side, jersey)
+    player_ball_diff_cost = get_player_ball_distance_increase_cost(
+        tracking_data, team_side, jersey
+    )
 
     costs = [time_diff_cost, distance_ball_event_cost, distance_ball_player_cost, ball_acceleration_cost, player_ball_diff_cost]
     keys = ["time_cost", "ball_event_dist_cost", "ball_player_dist_cost", "ball_acc_cost", "player_ball_dist_inc_cost"]
-
     return combine_cost_functions(costs, keys)
 
 
@@ -938,31 +702,7 @@ def base_shot_cost_function(
     pitch_length: float = 105.0,
     time_diff: np.ndarray | None = None,
     ball_event_distance: np.ndarray | None = None,
-) -> np.ndarray[float]:
-    """Function that calculates the total cost of a shot event compared to each frame.
-    The base shot cost function includes:
-    1. Time difference between the tracking and event data datetime
-    2. Distance between the ball and the event location
-    3. Distance between the ball and the player in the tracking data
-    4. Absolute ball acceleration
-    5. The increase in distance between the player and the ball
-    6. The angle between the ball moving direction and the goal
-
-    Args:
-        tracking_data (pd.DataFrame): Tracking data of the game
-        event (pd.Series): Shot event that needs to be synced
-        team_side (str): Either home or away, the side of the player performing the event
-        jersey (int): The shirt number of the player performing the event
-        time_diff (np.ndarray[float], optional): Array containing the time difference
-            between the tracking and event data datetime
-        ball_event_distance (np.ndarray[float], optional): Array containing the distance
-            between the ball and the event location
-
-    Returns:
-        np.ndarray[float]: array containing the total cost of the shot event compared to
-            each frame
-    """
-
+) -> tuple[np.ndarray, dict]:
     time_diff_cost = get_time_difference_cost(tracking_data, event, time_diff=time_diff)
     distance_ball_event_cost = get_distance_ball_event_cost(
         tracking_data, event, ball_event_distance=ball_event_distance
@@ -976,16 +716,9 @@ def base_shot_cost_function(
     )
     goal_angle_cost = get_ball_goal_angle_cost(tracking_data, team_side, pitch_length)
 
-    return combine_cost_functions(
-        [
-            time_diff_cost,
-            distance_ball_event_cost,
-            distance_ball_player_cost,
-            ball_acceleration_cost,
-            player_ball_diff_cost,
-            goal_angle_cost,
-        ]
-    )
+    costs = [time_diff_cost, distance_ball_event_cost, distance_ball_player_cost, ball_acceleration_cost, player_ball_diff_cost, goal_angle_cost]
+    keys = ["time_cost", "ball_event_dist_cost", "ball_player_dist_cost", "ball_acc_cost", "player_ball_dist_inc_cost", "goal_angle_cost"]
+    return combine_cost_functions(costs, keys)
 
 
 def base_general_cost_ball_event(
@@ -995,28 +728,7 @@ def base_general_cost_ball_event(
     jersey: int,
     time_diff: np.ndarray | None = None,
     ball_event_distance: np.ndarray | None = None,
-) -> np.ndarray[float]:
-    """Function that calculates the total cost of an event compared to each frame. The
-    base general cost function includes:
-    1. Time difference between the tracking and event data datetime
-    2. Distance between the ball and the event location
-    3. Distance between the ball and the player in the tracking data
-
-    Args:
-        tracking_data (pd.DataFrame): Tracking data of the game
-        event (pd.Series): Event that needs to be synced
-        team_side (str): Either home or away, the side of the player performing the event
-        jersey (int): The shirt number of the player performing the event
-        time_diff (np.ndarray[float], optional): Array containing the time difference
-            between the tracking and event data datetime
-        ball_event_distance (np.ndarray[float], optional): Array containing the distance
-            between the ball and the event location
-
-    Returns:
-        np.ndarray[float]: array containing the total cost of the event compared to each
-            frame
-    """
-
+) -> tuple[np.ndarray, dict]:
     time_diff_cost = get_time_difference_cost(tracking_data, event, time_diff=time_diff)
     distance_ball_event_cost = get_distance_ball_event_cost(
         tracking_data, event, ball_event_distance=ball_event_distance
@@ -1025,66 +737,30 @@ def base_general_cost_ball_event(
         tracking_data, team_side, jersey
     )
 
-    return combine_cost_functions(
-        [time_diff_cost, distance_ball_event_cost, distance_ball_player_cost]
-    )
+    costs = [time_diff_cost, distance_ball_event_cost, distance_ball_player_cost]
+    keys = ["time_cost", "ball_event_dist_cost", "ball_player_dist_cost"]
+    return combine_cost_functions(costs, keys)
 
 
 def _validate_cost(
     cost: np.ndarray[float],
     expected_len: int,
 ) -> None:
-    """
-    Simple function to validate the output of the cost functions. The cost function
-    should return a numpy array with the same length as the tracking data. The cost
-    function should not return any NaN values, negative values, or values larger than 1.
-    """
     if not isinstance(cost, np.ndarray):
-        raise TypeError(
-            f"Cost function should return a numpy array, got {type(cost)} instead"
-        )
+        raise TypeError(f"Expected array, got {type(cost)}")
     if cost.ndim != 1:
-        raise ValueError(
-            f"Cost function should return a 1D numpy array, got {cost.ndim}D array"
-            " instead"
-        )
-
+        raise ValueError(f"Expected 1D array, got {cost.ndim}D")
     if cost.shape[0] != expected_len:
-        raise ValueError(
-            "Cost function should return an array with the same length as the tracking "
-            f"data, got {cost.shape[0]} instead of {expected_len}"
-        )
-
+        raise ValueError(f"Length mismatch: {cost.shape[0]} != {expected_len}")
     if np.isnan(cost).any():
-        raise ValueError("Cost function should not return any NaN values")
-
-    if np.min(cost) < 0:
-        raise ValueError("Cost function should not return any negative values")
-
-    if np.max(cost) > 1:
-        raise ValueError("Cost function should not return any values larger than 1")
+        raise ValueError("Cost contains NaN values")
+    if np.min(cost) < 0 or np.max(cost) > 1:
+        raise ValueError("Cost values out of bounds [0, 1]")
 
 
 def _validate_sigmoid_kwargs(kwargs: dict[str, float]) -> None:
-    """Function that validates the keyword arguments passed to the sigmoid function.
-    The keyword arguments should only contain the following keys: a, b, c, d, e. The
-    values should be integers or floats.
-
-    Args:
-        kwargs (dict[str, float]): Dictionary containing the keyword arguments passed to
-            the sigmoid function
-
-    Raises:
-        ValueError: Invalid keyword argument _key_ passed to the sigmoid function
-        ValueError: Invalid value _value_ passed to the sigmoid function for keyword
-    """
     for key, value in kwargs.items():
         if key not in ["a", "b", "c", "d", "e"]:
-            raise ValueError(
-                f"Invalid keyword argument {key} passed to the sigmoid function"
-            )
+            raise ValueError(f"Invalid keyword argument {key}")
         if not isinstance(value, (int, float, np.integer, np.floating)):
-            raise ValueError(
-                f"Invalid value {value} passed to the sigmoid function for keyword "
-                f"argument {key}. Value should be an integer or float"
-            )
+            raise ValueError(f"Invalid type for {key}")
