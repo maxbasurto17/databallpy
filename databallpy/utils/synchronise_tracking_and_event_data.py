@@ -96,14 +96,17 @@ def synchronise_tracking_and_event_data(
             leave=False,
         )
 
-    # loop over batches
+    cost_cols = ["time_cost", "ball_event_dist_cost", "ball_player_dist_cost", "ball_acc_cost", "player_ball_dist_inc_cost", "goal_angle_cost"]
+    
     extra_tracking_info = pd.DataFrame(
         index=tracking_data.index,
-        columns=["databallpy_event", "event_id", "sync_certainty"],
+        columns=["databallpy_event", "event_id", "sync_certainty"] + cost_cols,
     )
     extra_event_info = pd.DataFrame(
-        index=event_data.index, columns=["tracking_frame", "sync_certainty"]
+        index=event_data.index, 
+        columns=["tracking_frame", "sync_certainty"] + cost_cols
     )
+
     batch_first_datetime = tracking_data["datetime"].iloc[0]
     for batch_end_datetime in end_datetimes:
         # create batches
@@ -117,7 +120,8 @@ def synchronise_tracking_and_event_data(
         event_batch = event_data_to_sync[event_mask].reset_index(drop=False)
 
         if len(event_batch) > 0:
-            sim_mat = _create_sim_mat(
+            # Unpack both the similarity matrix and the newly added components dictionary
+            sim_mat, matrix_components = _create_sim_mat(
                 tracking_batch,
                 event_batch,
                 home_players,
@@ -132,15 +136,22 @@ def synchronise_tracking_and_event_data(
                 event_type = event_batch.loc[event, "databallpy_event"]
                 event_index = int(event_batch.loc[event, "index"])
                 tracking_frame = int(tracking_batch.loc[frame, "index"])
+                
                 extra_tracking_info.loc[tracking_frame, "databallpy_event"] = event_type
                 extra_tracking_info.loc[tracking_frame, "event_id"] = event_id
-                extra_tracking_info.loc[tracking_frame, "sync_certainty"] = sim_mat[
-                    frame, event
-                ]
+                extra_tracking_info.loc[tracking_frame, "sync_certainty"] = sim_mat[frame, event]
+                
                 extra_event_info.loc[event_index, "tracking_frame"] = tracking_frame
-                extra_event_info.loc[event_index, "sync_certainty"] = sim_mat[
-                    frame, event
-                ]
+                extra_event_info.loc[event_index, "sync_certainty"] = sim_mat[frame, event]
+                
+                # --- NEW CODE TO ASSIGN COMPONENT COSTS ---
+                event_components = matrix_components[event]
+                for c_col in cost_cols:
+                    if c_col in event_components:
+                        # Extract value for the specific matching frame
+                        val = event_components[c_col][frame]
+                        extra_tracking_info.loc[tracking_frame, c_col] = val
+                        extra_event_info.loc[event_index, c_col] = val
 
         batch_first_datetime = batch_end_datetime
 
@@ -154,7 +165,7 @@ def _create_sim_mat(
     home_players: pd.DataFrame,
     away_players: pd.DataFrame,
     cost_functions: dict = {},
-) -> np.ndarray:
+) -> tuple[np.ndarray, dict]:
     """Function that creates similarity matrix between every frame and event in batch
 
     Args:
@@ -165,13 +176,16 @@ def _create_sim_mat(
         cost_functions (dict, optional): dictionary containing the cost functions that
 
     Returns:
-        np.ndarray: array containing similarity scores between every frame and events,
-            size is #frames, #events
+        tuple[np.ndarray, dict]: array containing similarity scores between every frame and events,
+            size is #frames, #events, and a dictionary containing the individual cost components
     """
     sim_mat = np.zeros((len(tracking_batch), len(event_batch)))
     time_diff, ball_event_diff = pre_compute_cost_function_variables(
         tracking_batch, event_batch
     )
+
+    # Dictionary to store the individual cost components for every frame-event pair
+    matrix_components = {}
 
     for row in event_batch.itertuples():
         i = row.Index
@@ -200,7 +214,7 @@ def _create_sim_mat(
         if "ball_event_distance" in sig.parameters:
             kwargs["ball_event_distance"] = ball_event_diff[:, i]
 
-        cost = cost_function(
+        cost, components = cost_function(
             tracking_data=tracking_batch,
             event=row,
             team_side=team_side,
@@ -209,13 +223,15 @@ def _create_sim_mat(
         )
 
         _validate_cost(cost, len(tracking_batch))
-
         sim_mat[:, i] = cost
+        
+        # Store components for this specific event index 'i'
+        matrix_components[i] = components
 
     sim_mat[np.isnan(sim_mat)] = 1
     sim_mat = -sim_mat + 1  # low cost is better similarity
 
-    return sim_mat
+    return sim_mat, matrix_components
 
 
 @logging_wrapper(__file__)
@@ -872,7 +888,9 @@ def combine_cost_functions(costs: list) -> np.ndarray[float]:
     """
     total_array = np.array(costs)
     total_array[:, np.isnan(total_array).all(axis=0)] = 1
-    return np.nanmean(total_array, axis=0)
+    mean_cost = np.nanmean(total_array, axis=0)
+    components = {keys[i]: costs[i] for i in range(len(costs))}
+    return mean_cost, components
 
 
 def base_pass_cost_function(
@@ -882,7 +900,7 @@ def base_pass_cost_function(
     jersey: int,
     time_diff: np.ndarray | None = None,
     ball_event_distance: np.ndarray | None = None,
-) -> np.ndarray[float]:
+) -> tuple[np.ndarray, dict]:
     """Function that calculates the total cost of a pass event compared to each frame.
     The base pase cost function includes:
     1. Time difference between the tracking and event data datetime
@@ -907,26 +925,15 @@ def base_pass_cost_function(
     """
 
     time_diff_cost = get_time_difference_cost(tracking_data, event, time_diff=time_diff)
-    distance_ball_event_cost = get_distance_ball_event_cost(
-        tracking_data, event, ball_event_distance=ball_event_distance
-    )
-    distance_ball_player_cost = get_distance_ball_player_cost(
-        tracking_data, team_side, jersey
-    )
+    distance_ball_event_cost = get_distance_ball_event_cost(tracking_data, event, ball_event_distance=ball_event_distance)
+    distance_ball_player_cost = get_distance_ball_player_cost(tracking_data, team_side, jersey)
     ball_acceleration_cost = get_ball_acceleration_cost(tracking_data)
-    player_ball_diff_cost = get_player_ball_distance_increase_cost(
-        tracking_data, team_side, jersey
-    )
+    player_ball_diff_cost = get_player_ball_distance_increase_cost(tracking_data, team_side, jersey)
 
-    return combine_cost_functions(
-        [
-            time_diff_cost,
-            distance_ball_event_cost,
-            distance_ball_player_cost,
-            ball_acceleration_cost,
-            player_ball_diff_cost,
-        ]
-    )
+    costs = [time_diff_cost, distance_ball_event_cost, distance_ball_player_cost, ball_acceleration_cost, player_ball_diff_cost]
+    keys = ["time_cost", "ball_event_dist_cost", "ball_player_dist_cost", "ball_acc_cost", "player_ball_dist_inc_cost"]
+
+    return combine_cost_functions(costs, keys)
 
 
 def base_shot_cost_function(
