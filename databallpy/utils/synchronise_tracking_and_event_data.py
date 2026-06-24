@@ -671,7 +671,7 @@ def combine_cost_functions(
     # 1. Define default weights if none are provided (1.0 = standard baseline weight)
     if weights_dict is None:
         weights_dict = {
-            "time_cost": 0.5,
+            "time_cost": 0.25,
             "ball_event_dist_cost": 1.0,
             "ball_player_dist_cost": 1.0,
             "ball_acc_cost": 1.0,          # <--- Lowered weight example
