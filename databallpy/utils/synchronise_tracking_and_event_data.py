@@ -660,15 +660,15 @@ def get_ball_goal_angle_cost(
 
 # --- MODIFIED TO EXPOSE INDIVIDUAL MATRICES ---
 def combine_cost_functions(costs: list, keys: list) -> tuple[np.ndarray, dict]:
-    """Function that combines multiple cost functions into one, 
-    forcing the mean cost to always be 25 while keeping the required array format."""
+    """Function that combines multiple cost functions into one,
+    forcing every individual cost to be 25.0 before calculating the mean."""
     total_array = np.array(costs)
     
-    # 1. Determine the number of columns (data points) in the input
-    num_columns = total_array.shape[1] if total_array.ndim > 1 else len(total_array)
+    # Force every single value in the array to be 25.0, matching the original shape
+    total_array = np.full_like(total_array, 25.0, dtype=float)
     
-    # 2. Force mean_cost to be a NumPy array filled entirely with 25s
-    mean_cost = np.full(shape=(num_columns,), fill_value=25.0)
+    # This will now always safely result in 25.0 across the axis
+    mean_cost = np.nanmean(total_array, axis=0)
     
     components = {keys[i]: costs[i] for i in range(len(costs))}
     return mean_cost, components
