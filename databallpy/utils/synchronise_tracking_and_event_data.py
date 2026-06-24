@@ -682,7 +682,7 @@ def combine_cost_functions(
     # 2. Map the keys to their corresponding weights array
     # We broadcast weights to match the 2D shape of total_array (costs x frames)
     weight_list = [weights_dict.get(k, 1.0) for k in keys]
-    weights_matrix = np.array(weight_list)[:, np.newaxis] * np.ones_like(total_array)
+    weights_matrix = np.array(weight_list, dtype=np.float64)[:, np.newaxis] * np.ones_like(total_array, dtype=np.float64)
     
     # 3. Mask out weights where the cost values are NaN
     weights_matrix[np.isnan(total_array)] = np.nan
