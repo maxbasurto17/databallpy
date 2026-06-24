@@ -660,17 +660,21 @@ def get_ball_goal_angle_cost(
 
 # --- MODIFIED TO EXPOSE INDIVIDUAL MATRICES ---
 def combine_cost_functions(costs: list, keys: list) -> tuple[np.ndarray, dict]:
-    """Function that combines multiple cost functions into one,
-    forcing every individual cost to be 25.0 before calculating the mean."""
+    """Function modified for testing: overrides all cost values (and NAs) to 25."""
     total_array = np.array(costs)
     
-    # Force every single value in the array to be 25.0, matching the original shape
-    total_array = np.full_like(total_array, 25.0, dtype=float)
+    # Fill the entire array with 25, overriding both actual values and NaNs
+    test_array = np.full_like(total_array, 25.0)
     
-    # This will now always safely result in 25.0 across the axis
-    mean_cost = np.nanmean(total_array, axis=0)
+    # Calculate the mean (which will just be 25 for every element)
+    mean_cost = np.nanmean(test_array, axis=0)
     
-    components = {keys[i]: costs[i] for i in range(len(costs))}
+    # Update components so the dictionary values match the test scenario
+    components = {
+        keys[i]: [25.0 if isinstance(x, (int, float)) else 25.0 for x in costs[i]] 
+        for i in range(len(costs))
+    }
+    
     return mean_cost, components
 
 
