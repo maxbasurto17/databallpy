@@ -659,22 +659,50 @@ def get_ball_goal_angle_cost(
 
 
 # --- MODIFIED TO EXPOSE INDIVIDUAL MATRICES ---
-def combine_cost_functions(costs: list, keys: list) -> tuple[np.ndarray, dict]:
-    """Function modified for testing: overrides all cost values (and NAs) to 25."""
-    total_array = np.array(costs)
+def combine_cost_functions(
+    costs: list, 
+    keys: list, 
+    weights_dict: dict = None
+) -> tuple[np.ndarray, dict]:
+    """Combines multiple cost functions using dynamic weights based on available components."""
+    total_array = np.array(costs) # Shape: (num_costs, num_frames)
+    total_array[:, np.isnan(total_array).all(axis=0)] = 1
     
-    # Fill the entire array with 25, overriding both actual values and NaNs
-    test_array = np.full_like(total_array, 1.0)
+    # 1. Define default weights if none are provided (1.0 = standard baseline weight)
+    if weights_dict is None:
+        weights_dict = {
+            "time_cost": 1.0,
+            "ball_event_dist_cost": 1.0,
+            "ball_player_dist_cost": 1.0,
+            "ball_acc_cost": 0.3,          # <--- Lowered weight example
+            "player_ball_dist_inc_cost": 1.0,
+            "goal_angle_cost": 1.0
+        }
+        
+    # 2. Map the keys to their corresponding weights array
+    # We broadcast weights to match the 2D shape of total_array (costs x frames)
+    weight_list = [weights_dict.get(k, 1.0) for k in keys]
+    weights_matrix = np.array(weight_list)[:, np.newaxis] * np.ones_like(total_array)
     
-    # Calculate the mean (which will just be 25 for every element)
-    mean_cost = np.nanmean(test_array, axis=0)
+    # 3. Mask out weights where the cost values are NaN
+    weights_matrix[np.isnan(total_array)] = np.nan
     
-    # Update components so the dictionary values match the test scenario
-    components = {
-        keys[i]: [1.0 if isinstance(x, (int, float)) else 1.0 for x in costs[i]] 
-        for i in range(len(costs))
-    }
+    # 4. Calculate the weighted average dynamically
+    # Weighted Mean = Sum(Value * Weight) / Sum(Weights)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        weighted_sum = np.nansum(total_array * weights_matrix, axis=0)
+        sum_of_weights = np.nansum(weights_matrix, axis=0)
+        
+        # Avoid division by zero if all elements are NaN
+        mean_cost = np.divide(
+            weighted_sum, 
+            sum_of_weights, 
+            out=np.ones_like(weighted_sum), 
+            where=sum_of_weights != 0
+        )
     
+    components = {keys[i]: costs[i] for i in range(len(costs))}
     return mean_cost, components
 
 
