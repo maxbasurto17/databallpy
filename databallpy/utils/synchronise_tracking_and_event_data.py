@@ -672,10 +672,10 @@ def combine_cost_functions(
     if weights_dict is None:
         weights_dict = {
             "time_cost": 1.0,
-            "ball_event_dist_cost": 1.0,
+            "ball_event_dist_cost": 1.5,
             "ball_player_dist_cost": 1.0,
-            "ball_acc_cost": 1.0,          # <--- Lowered weight example
-            "player_ball_dist_inc_cost": 1.0,
+            "ball_acc_cost": 1.0,
+            "player_ball_dist_inc_cost": 1.5,
             "goal_angle_cost": 1.0
         }
         
