@@ -165,13 +165,6 @@ def synchronise_tracking_and_event_data(
 
         batch_first_datetime = batch_end_datetime
 
-    print("\n" + "="*40)
-    print("Unique sync certainties calculated:")
-    print(extra_tracking_info["sync_certainty"].dropna().unique()[:10])
-    print("\nSample raw time costs saved:")
-    print(extra_tracking_info["time_cost"].dropna().head())
-    print("="*40 + "\n")
-
     return extra_tracking_info, extra_event_info
 
 
