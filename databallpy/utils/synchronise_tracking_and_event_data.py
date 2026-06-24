@@ -659,11 +659,48 @@ def get_ball_goal_angle_cost(
 
 
 # --- MODIFIED TO EXPOSE INDIVIDUAL MATRICES ---
-def combine_cost_functions(costs: list, keys: list) -> tuple[np.ndarray, dict]:
-    """Function that combines multiple cost functions into one and exposes original components."""
-    total_array = np.array(costs)
+def combine_cost_functions(
+    costs: list, 
+    keys: list, 
+    weights_dict: dict = None
+) -> tuple[np.ndarray, dict]:
+    """Combines multiple cost functions using dynamic weights based on available components."""
+    total_array = np.array(costs) # Shape: (num_costs, num_frames)
     total_array[:, np.isnan(total_array).all(axis=0)] = 1
-    mean_cost = np.nanmean(total_array, axis=0)
+    
+    # 1. Define default weights if none are provided (1.0 = standard baseline weight)
+    if weights_dict is None:
+        weights_dict = {
+            "time_cost": 0.5,
+            "ball_event_dist_cost": 1.0,
+            "ball_player_dist_cost": 1.0,
+            "ball_acc_cost": 1.0,
+            "player_ball_dist_inc_cost": 1.0,
+            "goal_angle_cost": 1.0
+        }
+        
+    # 2. Map the keys to their corresponding weights array
+    # We broadcast weights to match the 2D shape of total_array (costs x frames)
+    weight_list = [weights_dict.get(k, 1.0) for k in keys]
+    weights_matrix = np.array(weight_list)[:, np.newaxis] * np.ones_like(total_array)
+    
+    # 3. Mask out weights where the cost values are NaN
+    weights_matrix[np.isnan(total_array)] = np.nan
+    
+    # 4. Calculate the weighted average dynamically
+    # Weighted Mean = Sum(Value * Weight) / Sum(Weights)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        weighted_sum = np.nansum(total_array * weights_matrix, axis=0)
+        sum_of_weights = np.nansum(weights_matrix, axis=0)
+        
+        # Avoid division by zero if all elements are NaN
+        mean_cost = np.divide(
+            weighted_sum, 
+            sum_of_weights, 
+            out=np.ones_like(weighted_sum), 
+            where=sum_of_weights != 0
+        )
     
     components = {keys[i]: costs[i] for i in range(len(costs))}
     return mean_cost, components
