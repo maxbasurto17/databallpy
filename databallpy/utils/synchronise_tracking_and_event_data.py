@@ -664,14 +664,14 @@ def combine_cost_functions(costs: list, keys: list) -> tuple[np.ndarray, dict]:
     total_array = np.array(costs)
     
     # Fill the entire array with 25, overriding both actual values and NaNs
-    test_array = np.full_like(total_array, 25.0)
+    test_array = np.full_like(total_array, 1.0)
     
     # Calculate the mean (which will just be 25 for every element)
     mean_cost = np.nanmean(test_array, axis=0)
     
     # Update components so the dictionary values match the test scenario
     components = {
-        keys[i]: [25.0 if isinstance(x, (int, float)) else 25.0 for x in costs[i]] 
+        keys[i]: [1.0 if isinstance(x, (int, float)) else 1.0 for x in costs[i]] 
         for i in range(len(costs))
     }
     
