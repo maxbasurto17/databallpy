@@ -1,0 +1,4 @@
+sts_match_id,sb_match_id,kickoff_date_utc,kickoff_utc,home_name_sts,away_name_sts,home_name_sb,away_name_sb,has_positional
+MLS-MAT-0009B7,4037572,2026-02-22,2026-02-22 01:40:00.999000+00:00,Houston Dynamo FC,Chicago Fire FC,Houston Dynamo,Chicago Fire,True
+MLS-MAT-0009BM,4037587,2026-03-01,2026-03-01 01:41:00.943000+00:00,Houston Dynamo FC,Los Angeles Football Club,Houston Dynamo,LAFC,True
+MLS-MAT-0009DO,4038174,2026-04-12,2026-04-12 01:40:30.498000+00:00,Colorado Rapids,Houston Dynamo FC,Colorado Rapids,Houston Dynamo,True
